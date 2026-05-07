@@ -1,0 +1,16 @@
+# Binaries
+*.exe
+bin/
+
+# Local Data
+settings.txt
+versions/
+current
+
+# Go
+go.sum
+vendor/
+
+# OS files
+.DS_Store
+Thumbs.db
