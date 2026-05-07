@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	AppVersion  = "0.2.4"
+	AppVersion  = "0.2.5"
 	AdoptiumAPI = "https://api.adoptium.net/v3/assets/feature_releases"
 
 	ColorReset = "\033[0m"

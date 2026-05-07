@@ -1,6 +1,7 @@
 # Binaries
 *.exe
 bin/
+52pojie_edition/
 
 # Local Data
 settings.txt
