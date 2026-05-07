@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"archive/zip"
 	"syscall"
@@ -17,7 +18,7 @@ import (
 )
 
 const (
-	AppVersion  = "0.2.5"
+	AppVersion  = "0.2.6"
 	AdoptiumAPI = "https://api.adoptium.net/v3/assets/feature_releases"
 
 	ColorReset = "\033[0m"
@@ -40,7 +41,6 @@ func enableConsoleColors() {
 
 type Settings struct {
 	Root      string `json:"root"`
-	Current   string `json:"current"`
 	Symlink   string `json:"symlink"`
 	Proxy     string `json:"proxy"`
 	UseMirror bool   `json:"useMirror"`
@@ -57,8 +57,13 @@ func isAdmin() bool {
 func runAsAdmin() {
 	exe, _ := os.Executable()
 	args := strings.Join(os.Args[1:], " ")
-	cmd := fmt.Sprintf("Start-Process -FilePath '%s' -ArgumentList '%s' -Verb RunAs", exe, args)
+	cmd := fmt.Sprintf("Start-Process -FilePath '%s' -ArgumentList '%s' -Verb RunAs -Wait", exe, args)
 	exec.Command("powershell", "-Command", cmd).Run()
+	
+	loadSettings()
+	if len(os.Args) > 1 && (os.Args[1] == "use" || os.Args[1] == "uninstall") {
+		listInstalled()
+	}
 	os.Exit(0)
 }
 
@@ -85,6 +90,17 @@ func main() {
 	}
 
 	command := os.Args[1]
+	
+	// 如果是作为独立提权窗口运行的，防止报错或执行完毕后一闪而过导致闪退，全局添加拦截。
+	// (普通的非管理员窗口通过 os.Exit() 退出，不会触发此 defer)
+	defer func() {
+		if isAdmin() && (command == "use" || command == "uninstall" || command == "setup" || command == "symlink") {
+			fmt.Println("\n请按回车键关闭此窗口...")
+			var input string
+			fmt.Scanln(&input)
+		}
+	}()
+
 	switch command {
 	case "list", "ls":
 		if len(os.Args) > 2 && (os.Args[2] == "available" || os.Args[2] == "a") {
@@ -104,14 +120,14 @@ func main() {
 			fmt.Println("错误: 请指定要卸载的版本。")
 			return
 		}
-		uninstallVersion(os.Args[2])
+		uninstallVersion(resolveVersion(os.Args[2]))
 	case "use":
 		if !isAdmin() { runAsAdmin() }
 		if len(os.Args) < 3 {
 			fmt.Println("错误: 请指定要切换的版本。")
 			return
 		}
-		useVersion(os.Args[2])
+		useVersion(resolveVersion(os.Args[2]))
 	case "root":
 		if len(os.Args) > 2 {
 			path := os.Args[2]
@@ -169,15 +185,17 @@ func main() {
 		newPath := os.Args[2]
 		fmt.Printf("正在将软链接路径更新为: %s\n", newPath)
 		
+		oldVersion := getCurrentVersion()
+		
 		// 1. Remove old symlink
-		runPowerShell(fmt.Sprintf("if (Test-Path '%s') { Remove-Item '%s' -Force }", settings.Symlink, settings.Symlink))
+		exec.Command("cmd", "/c", "rmdir", "/q", settings.Symlink).Run()
 		
 		// 2. Update setting and Environment
 		setupEnvironment(newPath)
 		
 		// 3. Re-apply current version if any
-		if settings.Current != "" {
-			useVersion(settings.Current)
+		if oldVersion != "" {
+			useVersion(oldVersion)
 		}
 		fmt.Println("软链接路径已更新，环境已刷新！")
 	case "version", "-v", "v":
@@ -262,16 +280,16 @@ func setupEnvironment(customSymlink string) {
 	fmt.Printf("%s正在将 %%JAVA_HOME%%\\bin 和工具目录添加到系统 PATH 顶部...%s\n", ColorGreen, ColorReset)
 	script := fmt.Sprintf(`
 		$exeDir = '%s'
-		$javaBin = '%%JAVA_HOME%%\bin'
+		$javaBin = '%s\bin'
 		$path = [Environment]::GetEnvironmentVariable('Path', 'Machine')
 		
 		# Remove existing entries to avoid duplicates and ensure they move to the top
-		$pathArray = $path -split ';' | Where-Object { $_ -ne $javaBin -and $_ -ne $exeDir -and $_ -ne ($exeDir + '\') -and $_ -ne '' }
+		$pathArray = $path -split ';' | Where-Object { $_ -ne $javaBin -and $_ -ne '%%JAVA_HOME%%\bin' -and $_ -ne '%%JAVA_HOME%%' -and $_ -ne $exeDir -and $_ -ne ($exeDir + '\') -and $_ -ne '' }
 		
 		# Prepend our paths
 		$newPath = $javaBin + ';' + $exeDir + ';' + ($pathArray -join ';')
 		[Environment]::SetEnvironmentVariable('Path', $newPath, 'Machine')
-	`, exeDir)
+	`, exeDir, settings.Symlink)
 	
 	if output, err := runPowerShell(script); err != nil {
 		fmt.Printf("\n%s[错误] 无法更新 PATH: %v%s\n", ColorRed, err, ColorReset)
@@ -533,57 +551,70 @@ func useVersion(version string) {
 
 	linkPath := settings.Symlink
 	
-	// Create symlink using PowerShell (requires admin)
+	// Create symlink
 	fmt.Printf("正在创建软链接: %s -> %s\n", linkPath, versionDir)
-	// Use double quotes for paths to handle spaces better
-	script := fmt.Sprintf("if (Test-Path \"%s\") { Remove-Item \"%s\" -Force -Recurse }; New-Item -ItemType SymbolicLink -Path \"%s\" -Target \"%s\"", 
-		linkPath, linkPath, linkPath, versionDir)
 	
-	output, err := runPowerShell(script)
+	// 使用原生的 cmd 命令执行，彻底避免 PowerShell 对路径解析或空格转义导致的不稳定问题
+	exec.Command("cmd", "/c", "rmdir", "/q", linkPath).Run()
+	cmd := exec.Command("cmd", "/c", "mklink", "/D", linkPath, versionDir)
+	outputBytes, err := cmd.CombinedOutput()
+	output := string(outputBytes)
+	
 	if err != nil {
 		fmt.Printf("%s创建软链接出错: %v%s\n", ColorRed, err, ColorReset)
 		fmt.Println(output)
-		fmt.Println("提示: 请尝试以管理员身份运行。")
+		fmt.Println("提示: 确保路径中没有非法字符，且拥有管理员权限。")
 		return
 	}
-
-	settings.Current = version
-	saveSettings()
 	fmt.Printf("\n%s当前正在使用 JDK %s%s\n", ColorGreen, version, ColorReset)
+}
 
-	// 如果是提权运行的（即没有在控制台保持打开），增加一个等待或确保用户看见
-	if isAdmin() && len(os.Args) > 1 && os.Args[1] == "use" {
-		fmt.Println("\n请按回车键关闭此窗口...")
-		var input string
-		fmt.Scanln(&input)
+func getInstalledVersions() []string {
+	root := getEffectiveRoot()
+	versionsPath := filepath.Join(root, "versions")
+	entries, err := os.ReadDir(versionsPath)
+	if err != nil {
+		return nil
 	}
+	var versions []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			versions = append(versions, entry.Name())
+		}
+	}
+	return versions
+}
+
+func resolveVersion(input string) string {
+	versions := getInstalledVersions()
+	if len(versions) == 0 {
+		return input
+	}
+	
+	if idx, err := strconv.Atoi(input); err == nil {
+		if idx >= 1 && idx <= len(versions) {
+			return versions[idx-1]
+		}
+	}
+	return input
 }
 
 func listInstalled() {
-	root := getEffectiveRoot()
-	versionsPath := filepath.Join(root, "versions")
+	versions := getInstalledVersions()
 	
-	if _, err := os.Stat(versionsPath); os.IsNotExist(err) {
+	if len(versions) == 0 {
 		fmt.Println("尚未安装任何 JDK 版本。使用 'jvm install' 开始安装。")
-		return
-	}
-
-	entries, err := os.ReadDir(versionsPath)
-	if err != nil {
-		fmt.Printf("读取版本列表出错: %v\n", err)
 		return
 	}
 
 	current := getCurrentVersion()
 	fmt.Println("已安装的 JDK 版本:")
-	for _, entry := range entries {
-		if entry.IsDir() {
-			prefix := "  "
-			if entry.Name() == current {
-				prefix = "* "
-			}
-			fmt.Printf("%s %s\n", prefix, entry.Name())
+	for i, ver := range versions {
+		prefix := "  "
+		if ver == current {
+			prefix = "* "
 		}
+		fmt.Printf("[%d] %s %s\n", i+1, prefix, ver)
 	}
 }
 
@@ -595,5 +626,16 @@ func getArch() string {
 }
 
 func getCurrentVersion() string {
-	return settings.Current
+	// 优先尝试读取软链接指向的真实物理路径，作为唯一的“事实真相”
+	if settings.Symlink != "" {
+		if realPath, err := filepath.EvalSymlinks(settings.Symlink); err == nil {
+			baseName := filepath.Base(realPath)
+			if baseName != "" && baseName != "." && baseName != string(filepath.Separator) {
+				return baseName
+			}
+		}
+	}
+	
+	// 如果软链接不存在或无法读取，说明当前没有生效的 JDK
+	return ""
 }
