@@ -1,39 +1,34 @@
 @echo off
 setlocal
-title JVM Project Builder
+title Java Version Manager Builder
 
-echo ========================================
-echo   Java Version Manager - Building...
-echo ========================================
-echo.
+REM 1. Start Build
+powershell -Command "Write-Host '========================================' -ForegroundColor Cyan; Write-Host ([char]0x6B63+[char]0x5728+[char]0x6784+[char]0x5EFA+' Java Version Manager...') -ForegroundColor Cyan; Write-Host '========================================' -ForegroundColor Cyan"
 
-:: 1. Create bin directory if not exists
+REM 2. Create bin directory
 if not exist "bin" mkdir bin
 
-:: 2. Compile Go source
-echo [1/3] Compiling Go source...
+REM 3. Compile Go source
+powershell -Command "Write-Host ([char]0x5B+ '1/3' + [char]0x5D + ' ' + [char]0x6B63+[char]0x5728+[char]0x7F16+[char]0x8BD1+' Go '+[char]0x6E90+[char]0x7801+'...')"
 go build -o bin/jvm.exe src/main.go
 if %errorlevel% neq 0 (
-    echo.
-    echo [ERROR] Compilation failed!
+    powershell -Command "Write-Host ([char]0x6784+[char]0x5EFA+[char]0x5931+[char]0x8D25+[char]0xFF01) -ForegroundColor Red"
     pause
     exit /b
 )
 
-:: 3. Copy scripts from scripts/ to bin/
-echo [2/3] Copying distribution scripts...
+REM 4. Copy distribution scripts
+powershell -Command "Write-Host ([char]0x5B+ '2/3' + [char]0x5D + ' ' + [char]0x6B63+[char]0x5728+[char]0x590D+[char]0x5236+[char]0x5206+[char]0x53D1+[char]0x811A+[char]0x672C+'...')"
 copy /y scripts\install.bat bin\ >nul
 copy /y scripts\uninstall.bat bin\ >nul
 
-:: 4. Copy Documentation (Safe Copy)
-echo [3/3] Copying documentation...
+REM 5. Copy Documentation
+powershell -Command "Write-Host ([char]0x5B+ '3/3' + [char]0x5D + ' ' + [char]0x6B63+[char]0x5728+[char]0x590D+[char]0x5236+[char]0x6587+[char]0x6863+'...')"
 if exist "README.txt" copy /y "README.txt" bin\ >nul
 if exist "README.md" copy /y "README.md" bin\ >nul
+if exist "LICENSE" copy /y "LICENSE" bin\ >nul
 
-echo.
-echo ========================================
-echo   BUILD SUCCESSFUL!
-echo   Check the "bin" folder for your package.
-echo ========================================
+REM 6. Build Successful
+powershell -Command "Write-Host '' ; Write-Host '========================================' -ForegroundColor Green; Write-Host ([char]0x6784+[char]0x5EFA+[char]0x6210+[char]0x529F+[char]0xFF01) -ForegroundColor Green; Write-Host ([char]0x8BF7+[char]0x68C0+[char]0x67E5+' \"bin\" '+[char]0x76EE+[char]0x5F55+[char]0x3002) -ForegroundColor Green; Write-Host '========================================' -ForegroundColor Green"
 echo.
 pause
