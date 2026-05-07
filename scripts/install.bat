@@ -3,12 +3,14 @@ setlocal
 title Java Version Manager Installer
 
 :: Admin check
-net session >nul 2>&1
+if "%1"=="--elevated" goto :has_admin
+fltmc >nul 2>&1
 if %errorLevel% neq 0 (
     powershell -Command "Write-Host '[Prompt] Requesting administrator privileges...'"
-    powershell -Command "Start-Process '%~f0' -Verb RunAs"
+    powershell -Command "Start-Process '%~f0' -ArgumentList '--elevated' -Verb RunAs"
     exit /b
 )
+:has_admin
 
 cd /d "%~dp0"
 
