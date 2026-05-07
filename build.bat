@@ -3,32 +3,32 @@ setlocal
 title Java Version Manager Builder
 
 REM 1. Start Build
-powershell -Command "Write-Host '========================================' -ForegroundColor Cyan; Write-Host ([char]0x6B63+[char]0x5728+[char]0x6784+[char]0x5EFA+' Java Version Manager...') -ForegroundColor Cyan; Write-Host '========================================' -ForegroundColor Cyan"
+powershell -Command "Write-Host '========================================' -ForegroundColor Cyan; Write-Host ' Building Java Version Manager...' -ForegroundColor Cyan; Write-Host '========================================' -ForegroundColor Cyan"
 
 REM 2. Create bin directory
 if not exist "bin" mkdir bin
 
 REM 3. Compile Go source
-powershell -Command "Write-Host ([char]0x5B+ '1/3' + [char]0x5D + ' ' + [char]0x6B63+[char]0x5728+[char]0x7F16+[char]0x8BD1+' Go '+[char]0x6E90+[char]0x7801+'...')"
+powershell -Command "Write-Host '[1/3] Compiling Go source...'"
 go build -o bin/jvm.exe src/main.go
 if %errorlevel% neq 0 (
-    powershell -Command "Write-Host ([char]0x6784+[char]0x5EFA+[char]0x5931+[char]0x8D25+[char]0xFF01) -ForegroundColor Red"
+    powershell -Command "Write-Host 'Build failed!' -ForegroundColor Red"
     pause
     exit /b
 )
 
 REM 4. Copy distribution scripts
-powershell -Command "Write-Host ([char]0x5B+ '2/3' + [char]0x5D + ' ' + [char]0x6B63+[char]0x5728+[char]0x590D+[char]0x5236+[char]0x5206+[char]0x53D1+[char]0x811A+[char]0x672C+'...')"
-copy /y scripts\install.bat bin\ >nul
-copy /y scripts\uninstall.bat bin\ >nul
+powershell -Command "Write-Host '[2/3] Copying distribution scripts...'"
+copy /y scripts\install.bat bin\install.bat >nul
+copy /y scripts\uninstall.bat bin\uninstall.bat >nul
 
 REM 5. Copy Documentation
-powershell -Command "Write-Host ([char]0x5B+ '3/3' + [char]0x5D + ' ' + [char]0x6B63+[char]0x5728+[char]0x590D+[char]0x5236+[char]0x6587+[char]0x6863+'...')"
+powershell -Command "Write-Host '[3/3] Copying documentation...'"
 if exist "README.txt" copy /y "README.txt" bin\ >nul
 if exist "README.md" copy /y "README.md" bin\ >nul
 if exist "LICENSE" copy /y "LICENSE" bin\ >nul
 
 REM 6. Build Successful
-powershell -Command "Write-Host '' ; Write-Host '========================================' -ForegroundColor Green; Write-Host ([char]0x6784+[char]0x5EFA+[char]0x6210+[char]0x529F+[char]0xFF01) -ForegroundColor Green; Write-Host ([char]0x8BF7+[char]0x68C0+[char]0x67E5+' \"bin\" '+[char]0x76EE+[char]0x5F55+[char]0x3002) -ForegroundColor Green; Write-Host '========================================' -ForegroundColor Green"
+powershell -Command "Write-Host '' ; Write-Host '========================================' -ForegroundColor Green; Write-Host ' Build Successful!' -ForegroundColor Green; Write-Host ' Please check the \"bin\" directory.' -ForegroundColor Green; Write-Host '========================================' -ForegroundColor Green"
 echo.
 pause
