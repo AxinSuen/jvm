@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,14 +11,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
-	"archive/zip"
 	"syscall"
 	"unsafe"
 )
 
 const (
-	AppVersion  = "0.2.5"
+	AppVersion  = "0.3.0"
 	AdoptiumAPI = "https://api.adoptium.net/v3/assets/feature_releases"
 
 	ColorReset = "\033[0m"
@@ -40,8 +41,8 @@ func enableConsoleColors() {
 
 type Settings struct {
 	Root      string `json:"root"`
-	Current   string `json:"current"`
-	Symlink   string `json:"symlink"`
+	SourceURL string `json:"sourceURL"`
+	JavaHome  string `json:"javaHome"`
 	Proxy     string `json:"proxy"`
 	UseMirror bool   `json:"useMirror"`
 	MirrorURL string `json:"mirrorURL"`
@@ -57,8 +58,13 @@ func isAdmin() bool {
 func runAsAdmin() {
 	exe, _ := os.Executable()
 	args := strings.Join(os.Args[1:], " ")
-	cmd := fmt.Sprintf("Start-Process -FilePath '%s' -ArgumentList '%s' -Verb RunAs", exe, args)
+	cmd := fmt.Sprintf("Start-Process -FilePath '%s' -ArgumentList '%s' -Verb RunAs -Wait", exe, args)
 	exec.Command("powershell", "-Command", cmd).Run()
+
+	loadSettings()
+	if len(os.Args) > 1 && (os.Args[1] == "use" || os.Args[1] == "uninstall") {
+		listInstalled()
+	}
 	os.Exit(0)
 }
 
@@ -75,6 +81,165 @@ type Release struct {
 	} `json:"binaries"`
 }
 
+type RemoteRelease struct {
+	Version string `json:"version"`
+	URL     string `json:"url"`
+	Size    int64  `json:"size"`
+}
+
+type JDKProvider interface {
+	FetchAvailable(major int) ([]RemoteRelease, error)
+}
+
+// ---------------------------------------------------------
+// Adoptium Provider
+// ---------------------------------------------------------
+type AdoptiumProvider struct {
+	APIUrl string
+}
+
+func (p *AdoptiumProvider) FetchAvailable(major int) ([]RemoteRelease, error) {
+	url := fmt.Sprintf("%s/%d/ga?architecture=%s&image_type=jdk&os=windows", p.APIUrl, major, getArch())
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status: %s", resp.Status)
+	}
+
+	var releases []Release
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return nil, err
+	}
+
+	var results []RemoteRelease
+	for _, r := range releases {
+		if len(r.Binaries) > 0 {
+			results = append(results, RemoteRelease{
+				Version: r.VersionData.Semver,
+				URL:     r.Binaries[0].Package.Link,
+				Size:    r.Binaries[0].Package.Size,
+			})
+		}
+	}
+	return results, nil
+}
+
+// ---------------------------------------------------------
+// Zulu Provider
+// ---------------------------------------------------------
+type ZuluPackage struct {
+	JavaVersion []int  `json:"java_version"`
+	Name        string `json:"name"`
+	DownloadURL string `json:"download_url"`
+}
+
+type ZuluProvider struct {
+	APIUrl string
+}
+
+func (p *ZuluProvider) FetchAvailable(major int) ([]RemoteRelease, error) {
+	arch := "x86"
+	if getArch() != "x64" {
+		arch = getArch()
+	}
+	url := fmt.Sprintf("%s?os=windows&arch=%s&hw_bitness=64&ext=zip&java_version=%d&release_status=ga&java_package_type=jdk", p.APIUrl, arch, major)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status: %s", resp.Status)
+	}
+
+	var packages []ZuluPackage
+	if err := json.NewDecoder(resp.Body).Decode(&packages); err != nil {
+		return nil, err
+	}
+
+	var results []RemoteRelease
+	for _, pkg := range packages {
+		if strings.Contains(pkg.Name, "-jre") || strings.Contains(pkg.Name, "-fx-") {
+			continue
+		}
+
+		verStr := ""
+		if len(pkg.JavaVersion) > 0 {
+			var strParts []string
+			for _, v := range pkg.JavaVersion {
+				strParts = append(strParts, strconv.Itoa(v))
+			}
+			verStr = strings.Join(strParts, ".")
+		} else {
+			continue
+		}
+
+		results = append(results, RemoteRelease{
+			Version: verStr,
+			URL:     pkg.DownloadURL,
+			Size:    0,
+		})
+	}
+	return results, nil
+}
+
+// ---------------------------------------------------------
+// Custom Provider
+// ---------------------------------------------------------
+type CustomProvider struct {
+	APIUrl string
+}
+
+func (p *CustomProvider) FetchAvailable(major int) ([]RemoteRelease, error) {
+	resp, err := http.Get(p.APIUrl)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status: %s", resp.Status)
+	}
+
+	var results []RemoteRelease
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+		return nil, err
+	}
+
+	var filtered []RemoteRelease
+	prefix := fmt.Sprintf("%d.", major)
+	prefix8 := fmt.Sprintf("1.%d.", major)
+	for _, r := range results {
+		if strings.HasPrefix(r.Version, prefix) || strings.HasPrefix(r.Version, prefix8) || strconv.Itoa(major) == "8" && strings.HasPrefix(r.Version, "8") {
+			filtered = append(filtered, r)
+		}
+	}
+
+	if len(filtered) > 0 {
+		return filtered, nil
+	}
+	return results, nil
+}
+
+// ---------------------------------------------------------
+// Provider Router
+// ---------------------------------------------------------
+func getProvider() JDKProvider {
+	url := settings.SourceURL
+	if strings.Contains(url, "api.adoptium.net") {
+		return &AdoptiumProvider{APIUrl: "https://api.adoptium.net/v3/assets/feature_releases"}
+	} else if strings.Contains(url, "api.azul.com") {
+		return &ZuluProvider{APIUrl: "https://api.azul.com/metadata/v1/zulu/packages"}
+	} else {
+		return &CustomProvider{APIUrl: url}
+	}
+}
+
 func main() {
 	enableConsoleColors()
 	loadSettings()
@@ -85,6 +250,15 @@ func main() {
 	}
 
 	command := os.Args[1]
+
+	defer func() {
+		if isAdmin() && (command == "use" || command == "uninstall" || command == "setup" || command == "javahome") {
+			fmt.Println("\n(Action Required) Press Enter to close this window...")
+			var input string
+			fmt.Scanln(&input)
+		}
+	}()
+
 	switch command {
 	case "list", "ls":
 		if len(os.Args) > 2 && (os.Args[2] == "available" || os.Args[2] == "a") {
@@ -99,19 +273,50 @@ func main() {
 		}
 		installVersion(os.Args[2])
 	case "uninstall":
-		if !isAdmin() { runAsAdmin() }
+		if !isAdmin() {
+			runAsAdmin()
+		}
 		if len(os.Args) < 3 {
 			fmt.Println("Error: Please specify the version to uninstall.")
 			return
 		}
-		uninstallVersion(os.Args[2])
+		uninstallVersion(resolveVersion(os.Args[2]))
 	case "use":
-		if !isAdmin() { runAsAdmin() }
+		if !isAdmin() {
+			runAsAdmin()
+		}
 		if len(os.Args) < 3 {
 			fmt.Println("Error: Please specify the version to use.")
 			return
 		}
-		useVersion(os.Args[2])
+		useVersion(resolveVersion(os.Args[2]))
+	case "source":
+		if len(os.Args) > 2 {
+			val := os.Args[2]
+			if val == "adoptium" {
+				settings.SourceURL = AdoptiumAPI
+				fmt.Println("Download source switched to: Adoptium (Temurin)")
+			} else if val == "zulu" {
+				settings.SourceURL = "https://api.azul.com/metadata/v1/zulu/packages"
+				fmt.Println("Download source switched to: Azul Zulu")
+			} else if strings.HasPrefix(val, "http") {
+				settings.SourceURL = val
+				fmt.Printf("Download source switched to custom URL: %s\n", val)
+			} else {
+				fmt.Println("Unknown source format. Use 'adoptium', 'zulu' or a full URL starting with http.")
+				return
+			}
+			saveSettings()
+		} else {
+			sourceName := "Custom Source"
+			if strings.Contains(settings.SourceURL, "api.adoptium.net") {
+				sourceName = "Adoptium (Temurin)"
+			} else if strings.Contains(settings.SourceURL, "api.azul.com") {
+				sourceName = "Azul Zulu"
+			}
+			fmt.Printf("Current download source: %s\n", sourceName)
+			fmt.Printf("Source API URL: %s\n", settings.SourceURL)
+		}
 	case "root":
 		if len(os.Args) > 2 {
 			path := os.Args[2]
@@ -153,33 +358,39 @@ func main() {
 			fmt.Printf("Current version: %s\n", ver)
 		}
 	case "setup":
-		if !isAdmin() { runAsAdmin() }
-		customSymlink := ""
-		if len(os.Args) > 2 {
-			customSymlink = os.Args[2]
+		if !isAdmin() {
+			runAsAdmin()
 		}
-		setupEnvironment(customSymlink)
-	case "symlink":
-		if !isAdmin() { runAsAdmin() }
+		customJavaHome := ""
+		if len(os.Args) > 2 {
+			customJavaHome = os.Args[2]
+		}
+		setupEnvironment(customJavaHome)
+	case "javahome":
+		if !isAdmin() {
+			runAsAdmin()
+		}
 		if len(os.Args) < 3 {
-			fmt.Printf("Current symlink path: %s\n", settings.Symlink)
-			fmt.Println("To modify, use: jvm symlink <new_path>")
+			fmt.Printf("Current JAVA_HOME path: %s\n", settings.JavaHome)
+			fmt.Println("To modify, use: jvm javahome <new_path>")
 			return
 		}
 		newPath := os.Args[2]
-		fmt.Printf("Updating symlink path to: %s\n", newPath)
-		
-		// 1. Remove old symlink
-		runPowerShell(fmt.Sprintf("if (Test-Path '%s') { Remove-Item '%s' -Force }", settings.Symlink, settings.Symlink))
-		
+		fmt.Printf("Updating junction path to: %s\n", newPath)
+
+		oldVersion := getCurrentVersion()
+
+		// 1. Remove old junction
+		exec.Command("cmd", "/c", "rmdir", "/q", settings.JavaHome).Run()
+
 		// 2. Update setting and Environment
 		setupEnvironment(newPath)
-		
+
 		// 3. Re-apply current version if any
-		if settings.Current != "" {
-			useVersion(settings.Current)
+		if oldVersion != "" {
+			useVersion(oldVersion)
 		}
-		fmt.Println("Symlink path updated and environment refreshed!")
+		fmt.Println("Junction path updated and environment refreshed!")
 	case "version", "-v", "v":
 		fmt.Printf("jvm version %s\n", AppVersion)
 	case "help":
@@ -195,10 +406,12 @@ func printUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  jvm list [ls] [a]       List installed or [a]vailable remote versions")
 	fmt.Println("  jvm install [i] <ver>   Install a specified version (e.g., 17.0.1+12)")
-	fmt.Println("  jvm use <version>       Switch to a specified version")
+	fmt.Println("  jvm use <version>       Switch to a specified version (by name or index)")
 	fmt.Println("  jvm mirror [on|off]     Enable/Disable mirror acceleration")
-	fmt.Println("  jvm uninstall <version> Uninstall a specified version")
+	fmt.Println("  jvm source [url|name]   Set or view JDK download source (adoptium/zulu/customURL)")
+	fmt.Println("  jvm uninstall <version> Uninstall a specified version (by name or index)")
 	fmt.Println("  jvm root [path]         Set or view the JDK storage root directory")
+	fmt.Println("  jvm javahome [path]     Set or view the JAVA_HOME junction path")
 	fmt.Println("  jvm current             Display the currently active version")
 	fmt.Println("  jvm version [-v]        Display tool version and signature")
 }
@@ -209,6 +422,14 @@ func loadSettings() {
 	data, err := os.ReadFile(settingsPath)
 	if err == nil {
 		json.Unmarshal(data, &settings)
+		// Legacy compatibility
+		var legacy struct {
+			Symlink string `json:"symlink"`
+		}
+		json.Unmarshal(data, &legacy)
+		if settings.JavaHome == "" && legacy.Symlink != "" {
+			settings.JavaHome = legacy.Symlink
+		}
 	} else {
 		settings.UseMirror = false
 	}
@@ -216,8 +437,11 @@ func loadSettings() {
 	if settings.MirrorURL == "" {
 		settings.MirrorURL = "https://ghfast.top/"
 	}
-	if settings.Symlink == "" {
-		settings.Symlink = `C:\Program Files\Java\jdk`
+	if settings.JavaHome == "" {
+		settings.JavaHome = `C:\Program Files\Java\jdk`
+	}
+	if settings.SourceURL == "" {
+		settings.SourceURL = AdoptiumAPI
 	}
 }
 
@@ -236,12 +460,12 @@ func getEffectiveRoot() string {
 	return filepath.Dir(exePath)
 }
 
-func setupEnvironment(customSymlink string) {
+func setupEnvironment(customJavaHome string) {
 	fmt.Println("Initializing Java version management environment...")
-	
-	if customSymlink != "" {
-		absSym, _ := filepath.Abs(customSymlink)
-		settings.Symlink = absSym
+
+	if customJavaHome != "" {
+		absSym, _ := filepath.Abs(customJavaHome)
+		settings.JavaHome = absSym
 	}
 
 	exePath, _ := os.Executable()
@@ -249,30 +473,30 @@ func setupEnvironment(customSymlink string) {
 	root := getEffectiveRoot()
 	os.MkdirAll(filepath.Join(root, "versions"), 0755)
 
-	// Ensure the parent directory of the symlink exists
-	os.MkdirAll(filepath.Dir(settings.Symlink), 0755)
-	
-	fmt.Printf("%sSetting JAVA_HOME to %s%s\n", ColorGreen, settings.Symlink, ColorReset)
-	if output, err := runPowerShell(fmt.Sprintf("[Environment]::SetEnvironmentVariable('JAVA_HOME', '%s', 'Machine')", settings.Symlink)); err != nil {
+	// Ensure the parent directory of the junction exists
+	os.MkdirAll(filepath.Dir(settings.JavaHome), 0755)
+
+	fmt.Printf("%sSetting JAVA_HOME to %s%s\n", ColorGreen, settings.JavaHome, ColorReset)
+	if output, err := runPowerShell(fmt.Sprintf("[Environment]::SetEnvironmentVariable('JAVA_HOME', '%s', 'Machine')", settings.JavaHome)); err != nil {
 		fmt.Printf("\n%s[Error] Unable to set JAVA_HOME: %v%s\n", ColorRed, err, ColorReset)
 		fmt.Println(output)
 		os.Exit(1)
 	}
-	
-	fmt.Printf("%sAdding %%JAVA_HOME%%\\bin and tool directory to the top of system PATH...%s\n", ColorGreen, ColorReset)
+
+	fmt.Printf("%sAdding %%JAVA_HOME%%\\bin and tool directory to system PATH...%s\n", ColorGreen, ColorReset)
 	script := fmt.Sprintf(`
 		$exeDir = '%s'
-		$javaBin = '%%JAVA_HOME%%\bin'
+		$javaBin = '%s\bin'
 		$path = [Environment]::GetEnvironmentVariable('Path', 'Machine')
 		
 		# Remove existing entries to avoid duplicates and ensure they move to the top
-		$pathArray = $path -split ';' | Where-Object { $_ -ne $javaBin -and $_ -ne $exeDir -and $_ -ne ($exeDir + '\') -and $_ -ne '' }
+		$pathArray = $path -split ';' | Where-Object { $_ -ne $javaBin -and $_ -ne '%%JAVA_HOME%%\bin' -and $_ -ne '%%JAVA_HOME%%' -and $_ -ne $exeDir -and $_ -ne ($exeDir + '\') -and $_ -ne '' }
 		
 		# Prepend our paths
 		$newPath = $javaBin + ';' + $exeDir + ';' + ($pathArray -join ';')
 		[Environment]::SetEnvironmentVariable('Path', $newPath, 'Machine')
-	`, exeDir)
-	
+	`, exeDir, settings.JavaHome)
+
 	if output, err := runPowerShell(script); err != nil {
 		fmt.Printf("\n%s[Error] Unable to update PATH: %v%s\n", ColorRed, err, ColorReset)
 		fmt.Println(output)
@@ -280,7 +504,8 @@ func setupEnvironment(customSymlink string) {
 	}
 
 	saveSettings()
-	fmt.Println("\nInitialization complete! Please restart your terminal for changes to take effect.")
+	fmt.Printf("\n%s[Success] Java environment initialized!%s\n", ColorGreen, ColorReset)
+	fmt.Println("Please restart your terminal to apply changes.")
 }
 
 func runPowerShell(command string) (string, error) {
@@ -290,10 +515,11 @@ func runPowerShell(command string) (string, error) {
 }
 
 func listAvailable() {
-	fmt.Println("Fetching available versions from Adoptium (Temurin)...")
+	fmt.Println("Fetching available versions from current source...")
 	majors := []int{8, 11, 17, 21}
+	provider := getProvider()
 	for _, v := range majors {
-		releases, err := fetchReleases(v)
+		releases, err := provider.FetchAvailable(v)
 		if err != nil {
 			fmt.Printf("Error fetching JDK %d: %v\n", v, err)
 			continue
@@ -302,7 +528,7 @@ func listAvailable() {
 		if len(releases) > 0 {
 			versions := make(map[string]bool)
 			for _, r := range releases {
-				versions[r.VersionData.Semver] = true
+				versions[r.Version] = true
 			}
 			var sorted []string
 			for k := range versions {
@@ -317,40 +543,26 @@ func listAvailable() {
 	}
 }
 
-func fetchReleases(major int) ([]Release, error) {
-	url := fmt.Sprintf("%s/%d/ga?architecture=%s&image_type=jdk&os=windows", AdoptiumAPI, major, getArch())
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status: %s", resp.Status)
-	}
-
-	var releases []Release
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
-		return nil, err
-	}
-	return releases, nil
-}
-
 func installVersion(version string) {
 	fmt.Printf("Searching for version %s...\n", version)
-	
+
 	parts := strings.Split(version, ".")
 	if len(parts) == 0 {
 		fmt.Println("Invalid version format.")
 		return
 	}
 	majorStr := parts[0]
-	if majorStr == "jdk8u" { majorStr = "8" } 
+	if majorStr == "jdk8u" || majorStr == "1" {
+		majorStr = "8"
+	}
 	var major int
 	fmt.Sscanf(majorStr, "%d", &major)
-	if major == 0 { major = 8 } 
+	if major == 0 {
+		major = 8
+	}
 
-	releases, err := fetchReleases(major)
+	provider := getProvider()
+	releases, err := provider.FetchAvailable(major)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
@@ -359,12 +571,10 @@ func installVersion(version string) {
 	var targetLink string
 	var targetSize int64
 	for _, r := range releases {
-		if r.VersionData.Semver == version {
-			if len(r.Binaries) > 0 {
-				targetLink = r.Binaries[0].Package.Link
-				targetSize = r.Binaries[0].Package.Size
-				break
-			}
+		if r.Version == version {
+			targetLink = r.URL
+			targetSize = r.Size
+			break
 		}
 	}
 
@@ -373,9 +583,16 @@ func installVersion(version string) {
 		return
 	}
 
-	if settings.UseMirror {
+	if settings.UseMirror && strings.Contains(settings.SourceURL, "api.adoptium.net") {
 		fmt.Printf("Using mirror acceleration: %s\n", settings.MirrorURL)
 		targetLink = settings.MirrorURL + targetLink
+	}
+
+	if targetSize == 0 {
+		resp, err := http.Head(targetLink)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			targetSize = resp.ContentLength
+		}
 	}
 
 	versionsDir := filepath.Join(getEffectiveRoot(), "versions")
@@ -387,10 +604,10 @@ func installVersion(version string) {
 	}
 
 	os.MkdirAll(versionsDir, 0755)
-	
+
 	tmpFile := filepath.Join(os.TempDir(), "jvm-jdk.zip")
 	fmt.Printf("Downloading %s (%.2f MB)...\n", version, float64(targetSize)/1024/1024)
-	
+
 	if err := downloadFile(tmpFile, targetLink, targetSize); err != nil {
 		fmt.Printf("\nDownload error: %v\n", err)
 		return
@@ -418,7 +635,7 @@ func uninstallVersion(version string) {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Println("Uninstallation complete.")
+	fmt.Printf("%s[Success] Version %s uninstalled.%s\n", ColorGreen, version, ColorReset)
 }
 
 type ProgressWriter struct {
@@ -437,7 +654,7 @@ func (pw *ProgressWriter) printProgress() {
 	percent := float64(pw.Downloaded) / float64(pw.Total) * 100
 	width := 30
 	completed := int(percent / 100 * float64(width))
-	
+
 	bar := make([]byte, width)
 	for i := 0; i < width; i++ {
 		if i < completed {
@@ -448,7 +665,7 @@ func (pw *ProgressWriter) printProgress() {
 			bar[i] = ' '
 		}
 	}
-	
+
 	fmt.Printf("\r[%s] %.1f%% (%d/%d MB)", string(bar), percent, pw.Downloaded/1024/1024, pw.Total/1024/1024)
 }
 
@@ -525,65 +742,81 @@ func extractZip(src string, dest string) error {
 func useVersion(version string) {
 	root := getEffectiveRoot()
 	versionDir := filepath.Join(root, "versions", version)
-	
+
 	if _, err := os.Stat(versionDir); os.IsNotExist(err) {
 		fmt.Printf("Version %s is not installed. Please run 'jvm install %s' first.\n", version, version)
 		return
 	}
 
-	linkPath := settings.Symlink
-	
-	// Create symlink using PowerShell (requires admin)
-	fmt.Printf("Creating symlink: %s -> %s\n", linkPath, versionDir)
-	// Use double quotes for paths to handle spaces better
-	script := fmt.Sprintf("if (Test-Path \"%s\") { Remove-Item \"%s\" -Force -Recurse }; New-Item -ItemType SymbolicLink -Path \"%s\" -Target \"%s\"", 
-		linkPath, linkPath, linkPath, versionDir)
-	
-	output, err := runPowerShell(script)
+	linkPath := settings.JavaHome
+
+	// Ensure parent directory exists
+	os.MkdirAll(filepath.Dir(linkPath), 0755)
+
+	fmt.Printf("Creating junction: %s -> %s\n", linkPath, versionDir)
+
+	// Use native cmd to avoid PowerShell path escaping issues
+	exec.Command("cmd", "/c", "rmdir", "/q", linkPath).Run()
+	// Use /J (Junction) instead of /D (Symlink) to bypass privilege requirements
+	cmd := exec.Command("cmd", "/c", "mklink", "/J", linkPath, versionDir)
+	outputBytes, err := cmd.CombinedOutput()
+	output := string(outputBytes)
+
 	if err != nil {
-		fmt.Printf("%sError creating symlink: %v%s\n", ColorRed, err, ColorReset)
+		fmt.Printf("%sError creating junction: %v%s\n", ColorRed, err, ColorReset)
 		fmt.Println(output)
-		fmt.Println("Tip: Please try running as administrator.")
+		fmt.Println("Tip: Ensure the path is valid and you have necessary permissions.")
 		return
 	}
-
-	settings.Current = version
-	saveSettings()
 	fmt.Printf("\n%sCurrently using JDK %s%s\n", ColorGreen, version, ColorReset)
+}
 
-	// If running as admin (triggered by UAC), wait for user to see the output
-	if isAdmin() && len(os.Args) > 1 && os.Args[1] == "use" {
-		fmt.Println("\nPlease press Enter to close this window...")
-		var input string
-		fmt.Scanln(&input)
+func getInstalledVersions() []string {
+	root := getEffectiveRoot()
+	versionsPath := filepath.Join(root, "versions")
+	entries, err := os.ReadDir(versionsPath)
+	if err != nil {
+		return nil
 	}
+	var versions []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			versions = append(versions, entry.Name())
+		}
+	}
+	return versions
+}
+
+func resolveVersion(input string) string {
+	versions := getInstalledVersions()
+	if len(versions) == 0 {
+		return input
+	}
+
+	if idx, err := strconv.Atoi(input); err == nil {
+		if idx >= 1 && idx <= len(versions) {
+			return versions[idx-1]
+		}
+	}
+	return input
 }
 
 func listInstalled() {
-	root := getEffectiveRoot()
-	versionsPath := filepath.Join(root, "versions")
-	
-	if _, err := os.Stat(versionsPath); os.IsNotExist(err) {
-		fmt.Println("No JDK versions installed yet. Use 'jvm install' to get started.")
-		return
-	}
+	versions := getInstalledVersions()
 
-	entries, err := os.ReadDir(versionsPath)
-	if err != nil {
-		fmt.Printf("Error reading version list: %v\n", err)
+	if len(versions) == 0 {
+		fmt.Println("No JDK versions installed yet. Use 'jvm install' to get started.")
 		return
 	}
 
 	current := getCurrentVersion()
 	fmt.Println("Installed JDK versions:")
-	for _, entry := range entries {
-		if entry.IsDir() {
-			prefix := "  "
-			if entry.Name() == current {
-				prefix = "* "
-			}
-			fmt.Printf("%s %s\n", prefix, entry.Name())
+	for i, ver := range versions {
+		prefix := "  "
+		if ver == current {
+			prefix = "* "
 		}
+		fmt.Printf("[%d] %s %s\n", i+1, prefix, ver)
 	}
 }
 
@@ -595,5 +828,15 @@ func getArch() string {
 }
 
 func getCurrentVersion() string {
-	return settings.Current
+	// Try reading the physical link target
+	if settings.JavaHome != "" {
+		if realPath, err := os.Readlink(settings.JavaHome); err == nil {
+			baseName := filepath.Base(realPath)
+			if baseName != "" && baseName != "." && baseName != string(filepath.Separator) {
+				return baseName
+			}
+		}
+	}
+
+	return ""
 }

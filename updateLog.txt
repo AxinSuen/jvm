@@ -1,0 +1,35 @@
+# Changelog
+
+## v0.3.0
+**Release Date: 2026-05-08**
+
+🚀 **Optimizations & Fixes**
+- **Multi-source Download Architecture**: Completely refactored API parsing logic with a unified `JDKProvider` interface. Added native support for Adoptium (Temurin) and Azul Zulu APIs, along with a fallback generic parser for custom distribution nodes.
+- **Dynamic Source Switching**: Added `jvm source [url|name]` command to switch between different JDK providers (e.g., zulu, adoptium) or custom URLs with persistent configuration.
+- **Junction over Symlink**: Replaced `mklink /D` (Symlink) with `mklink /J` (Directory Junction) for creating links. This bypasses strict privilege requirements on Windows Home editions, ensuring 100% stability without special configuration.
+- **Junction Resolution Fix**: Fixed a bug where `jvm ls` lost the active version `*` marker because Go's `EvalSymlinks` cannot resolve Windows Junctions. Rewrote the detection logic using low-level `os.Readlink`.
+- **Terminology Refactor**: Renamed the "symlink" concept to "javahome" across configuration and CLI interactions for better clarity. Updated the modification command to `jvm javahome`.
+- **Enhanced Path Fault Tolerance**: Automatically checks and silently creates parent directories before creating junctions, preventing failures caused by missing physical folders (e.g., `C:\Program Files\Java`).
+- **Updated Documentation**: Updated `README.md` and `GITHUB_INTRO.md` with new features and removed obsolete configuration instructions.
+
+---
+
+## v0.2.6
+**Release Date: 2026-05-07**
+
+🚀 **Optimizations & Fixes**
+- **Quick Index Mapping**: The `jvm ls` command now automatically assigns short indices to each installed version. You can now use these indices for version switching (`jvm use 1`) or uninstallation (`jvm uninstall 1`), significantly reducing typing effort.
+- **Dynamic Active Version Validation**: Refactored the logic for retrieving the currently active version. It now reads the physical link target directly instead of relying on configuration cache, ensuring the `*` marker in `jvm ls` is 100% accurate.
+- **Native Link Operations**: Completely removed dependence on PowerShell for link operations, switching to native `cmd` commands. This resolves hidden bugs related to path escaping and target clearing.
+- **UAC Window Interception**: Added global wait interception for commands involving elevated privileges. When a UAC window finishes or errors, it now prompts "Please press Enter to close this window," allowing users to view logs.
+- **Path Environment Variable Fix**: Resolved an issue where `%JAVA_HOME%\bin` injected into the registry via `install.bat` failed due to type parsing issues. Switched to injecting absolute physical paths and refined deep cleanup logic in the uninstaller.
+
+---
+
+## v0.2.5
+**Release Date: 2026-05-07**
+
+🚀 **Optimizations & Fixes**
+- **UAC Loop Fix**: Resolved an issue where installation/uninstallation scripts would repeatedly prompt for authorization in some Windows environments, even after being granted administrator privileges.
+- **Reliable Privilege Detection**: Migrated the privilege detection command from `net session` to the more universal `fltmc`, improving compatibility across various Windows editions.
+- **Anti-Loop Flag**: Introduced an `--elevated` parameter for scripts running with elevated privileges. When detected, the script skips the privilege check to prevent infinite pop-up loops.

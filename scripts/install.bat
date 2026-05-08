@@ -19,18 +19,15 @@ powershell -Command "Write-Host '========================================' -Fore
 powershell -Command "Write-Host '  Java Version Manager Installer' -ForegroundColor Cyan"
 powershell -Command "Write-Host '========================================' -ForegroundColor Cyan"
 
-powershell -Command "Write-Host 'Initializing environment...'"
 .\jvm.exe setup
 
 if %errorlevel% neq 0 goto :failed
-
-powershell -Command "Write-Host '[Success] JVM environment configuration completed!' -ForegroundColor Green"
-powershell -Command "Write-Host 'Please restart your terminal or command line window to take effect.'"
 goto :end
 
 :failed
 powershell -Command "Write-Host '[Failed] Initialization failed.' -ForegroundColor Red"
+echo.
+echo Press any key to exit...
+pause > nul
 
 :end
-echo.
-pause

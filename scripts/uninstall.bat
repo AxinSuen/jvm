@@ -15,10 +15,10 @@ if %errorLevel% neq 0 (
 cd /d "%~dp0"
 set "MSG_BANNER=Write-Host '========================================' -ForegroundColor Cyan"
 set "MSG_TITLE=Write-Host '  Java Version Manager Uninstaller' -ForegroundColor Cyan"
-set "MSG_CLEAN=Write-Host 'Cleaning system environment variables...'"
-set "MSG_SUCCESS=Write-Host '[Success] All system associations have been removed.' -ForegroundColor Green"
+set "MSG_CLEAN=Write-Host 'Cleaning up system environment variables...'"
+set "MSG_SUCCESS=Write-Host '[Cleanup Success] All system associations have been removed.' -ForegroundColor Green"
 set "MSG_MANUAL=Write-Host 'You can now manually delete this folder.'"
-set "MSG_FAIL=Write-Host '[Failed] Cleanup process failed.' -ForegroundColor Red"
+set "MSG_FAIL=Write-Host '[Failed] Error occurred during cleanup.' -ForegroundColor Red"
 
 powershell -Command "%MSG_BANNER%"
 powershell -Command "%MSG_TITLE%"
@@ -31,19 +31,21 @@ set "PS_FILE=%temp%\jvm_cleanup.ps1"
 echo $ErrorActionPreference = 'Stop' > "%PS_FILE%"
 echo $currentDir = '%~dp0' >> "%PS_FILE%"
 echo try { >> "%PS_FILE%"
-echo     Write-Host '1. Removing JAVA_HOME...' -ForegroundColor Green >> "%PS_FILE%"
+echo     $oldJavaHome = [Environment]::GetEnvironmentVariable('JAVA_HOME', 'Machine') >> "%PS_FILE%"
+echo     $oldJavaBin = if ($oldJavaHome) { Join-Path $oldJavaHome 'bin' } else { 'NOMATCH_STRING_XYZZY' } >> "%PS_FILE%"
+echo     Write-Host ('1. Removing JAVA_HOME...') -ForegroundColor Green >> "%PS_FILE%"
 echo     [Environment]::SetEnvironmentVariable('JAVA_HOME', $null, 'Machine') >> "%PS_FILE%"
-echo     Write-Host '2. Cleaning system PATH...' -ForegroundColor Green >> "%PS_FILE%"
+echo     Write-Host ('2. Cleaning up PATH...') -ForegroundColor Green >> "%PS_FILE%"
 echo     $path = [Environment]::GetEnvironmentVariable('Path', 'Machine') >> "%PS_FILE%"
 echo     $pathArray = $path -split ';' >> "%PS_FILE%"
-echo     $newPathArray = $pathArray ^| Where-Object { $_ -ne '%%JAVA_HOME%%\bin' -and $_ -ne $currentDir -and $_ -ne $currentDir.TrimEnd('\') -and $_ -notlike '*\jvm\current*' -and $_ -ne '' } >> "%PS_FILE%"
+echo     $newPathArray = $pathArray ^| Where-Object { $_ -ne '%%JAVA_HOME%%\bin' -and $_ -ne '%%JAVA_HOME%%' -and $_ -ne $oldJavaBin -and $_ -ne $currentDir -and $_ -ne $currentDir.TrimEnd('\') -and $_ -notlike '*\jvm\current*' -and $_ -ne '' } >> "%PS_FILE%"
 echo     $newPath = $newPathArray -join ';' >> "%PS_FILE%"
 echo     [Environment]::SetEnvironmentVariable('Path', $newPath, 'Machine') >> "%PS_FILE%"
-echo     Write-Host '3. Deleting settings.txt...' -ForegroundColor Green >> "%PS_FILE%"
+echo     Write-Host ('3. Deleting settings.txt...') -ForegroundColor Green >> "%PS_FILE%"
 echo     $settingsFile = Join-Path $currentDir 'settings.txt' >> "%PS_FILE%"
 echo     if (Test-Path $settingsFile) { Remove-Item $settingsFile -Force } >> "%PS_FILE%"
 echo } catch { >> "%PS_FILE%"
-echo     Write-Host '[Error] Cleanup failed' -ForegroundColor Red >> "%PS_FILE%"
+echo     Write-Host ('`n[Error] Cleanup failed') -ForegroundColor Red >> "%PS_FILE%"
 echo     exit 1 >> "%PS_FILE%"
 echo } >> "%PS_FILE%"
 
@@ -57,11 +59,15 @@ if %EXIT_CODE% neq 0 goto :failed
 
 powershell -Command "%MSG_SUCCESS%"
 powershell -Command "%MSG_MANUAL%"
+echo.
+echo Press any key to exit...
+pause > nul
 goto :end
 
 :failed
-powershell -Command "%MSG_FAIL%"
+powershell -Command "Write-Host '[Failed] Cleanup failed' -ForegroundColor Red"
+echo.
+echo Press any key to exit...
+pause > nul
 
 :end
-echo.
-pause
