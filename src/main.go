@@ -260,7 +260,7 @@ func main() {
 	// (普通的非管理员窗口通过 os.Exit() 退出，不会触发此 defer)
 	defer func() {
 		if isAdmin() && (command == "use" || command == "uninstall" || command == "setup" || command == "javahome") {
-			fmt.Println("\n请按回车键关闭此窗口...")
+			fmt.Println("\n(需要操作) 请按回车键关闭此窗口...")
 			var input string
 			fmt.Scanln(&input)
 		}
@@ -502,7 +502,8 @@ func setupEnvironment(customJavaHome string) {
 	}
 
 	saveSettings()
-	fmt.Println("\n初始化完成！请重新启动终端以使更改生效。")
+	fmt.Printf("\n%s[成功] Java 环境初始化完成！%s\n", ColorGreen, ColorReset)
+	fmt.Println("请重启终端以使更改生效。")
 }
 
 func runPowerShell(command string) (string, error) {
@@ -633,7 +634,7 @@ func uninstallVersion(version string) {
 		fmt.Printf("错误: %v\n", err)
 		return
 	}
-	fmt.Println("卸载完成。")
+	fmt.Printf("%s[成功] 版本 %s 已卸载。%s\n", ColorGreen, version, ColorReset)
 }
 
 type ProgressWriter struct {

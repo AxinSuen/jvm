@@ -13,7 +13,9 @@ powershell -Command "Write-Host ([char]0x5B+ '1/3' + [char]0x5D + ' ' + [char]0x
 go build -o bin/jvm.exe src/main.go
 if %errorlevel% neq 0 (
     powershell -Command "Write-Host ([char]0x6784+[char]0x5EFA+[char]0x5931+[char]0x8D25+[char]0xFF01) -ForegroundColor Red"
-    pause
+    echo.
+    powershell -Command "Write-Host ([char]0x8BF7+[char]0x6309+[char]0x56DE+[char]0x8F66+[char]0x952E+[char]0x9000+[char]0x51FA+[char]0x2e+[char]0x2e+[char]0x2e)"
+    pause > nul
     exit /b
 )
 
@@ -28,7 +30,12 @@ if exist "README.txt" copy /y "README.txt" bin\ >nul
 if exist "README.md" copy /y "README.md" bin\ >nul
 if exist "LICENSE" copy /y "LICENSE" bin\ >nul
 
-REM 6. Build Successful
+REM 6. 复制更新日志
+powershell -Command "Write-Host ([char]0x5B+ '4/4' + [char]0x5D + ' 正在复制更新日志...')"
+if exist "updateLog.txt" copy /y "updateLog.txt" bin\ >nul
+
+REM 7. 构建成功
 powershell -Command "Write-Host '' ; Write-Host '========================================' -ForegroundColor Green; Write-Host ([char]0x6784+[char]0x5EFA+[char]0x6210+[char]0x529F+[char]0xFF01) -ForegroundColor Green; Write-Host ([char]0x8BF7+[char]0x68C0+[char]0x67E5+' \"bin\" '+[char]0x76EE+[char]0x5F55+[char]0x3002) -ForegroundColor Green; Write-Host '========================================' -ForegroundColor Green"
 echo.
-pause
+powershell -Command "Write-Host ([char]0x8BF7+[char]0x6309+[char]0x56DE+[char]0x8F66+[char]0x952E+[char]0x9000+[char]0x51FA+[char]0x2e+[char]0x2e+[char]0x2e)"
+pause > nul
