@@ -259,7 +259,7 @@ func main() {
 	// 如果是作为独立提权窗口运行的，防止报错或执行完毕后一闪而过导致闪退，全局添加拦截。
 	// (普通的非管理员窗口通过 os.Exit() 退出，不会触发此 defer)
 	defer func() {
-		if isAdmin() && (command == "use" || command == "uninstall" || command == "setup" || command == "javahome") {
+		if isAdmin() && (command == "use" || command == "uninstall" || command == "javahome") {
 			fmt.Println("\n(需要操作) 请按回车键关闭此窗口...")
 			var input string
 			fmt.Scanln(&input)

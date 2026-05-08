@@ -9,7 +9,7 @@ REM 2. Create bin directory
 if not exist "bin" mkdir bin
 
 REM 3. Compile Go source
-powershell -Command "Write-Host ([char]0x5B+ '1/3' + [char]0x5D + ' ' + [char]0x6B63+[char]0x5728+[char]0x7F16+[char]0x8BD1+' Go '+[char]0x6E90+[char]0x7801+'...')"
+powershell -Command "Write-Host ([char]0x5B+ '1/4' + [char]0x5D + ' ' + [char]0x6B63+[char]0x5728+[char]0x7F16+[char]0x8BD1+' Go '+[char]0x6E90+[char]0x7801+'...')"
 go build -o bin/jvm.exe src/main.go
 if %errorlevel% neq 0 (
     powershell -Command "Write-Host ([char]0x6784+[char]0x5EFA+[char]0x5931+[char]0x8D25+[char]0xFF01) -ForegroundColor Red"
@@ -20,18 +20,18 @@ if %errorlevel% neq 0 (
 )
 
 REM 4. Copy distribution scripts
-powershell -Command "Write-Host ([char]0x5B+ '2/3' + [char]0x5D + ' ' + [char]0x6B63+[char]0x5728+[char]0x590D+[char]0x5236+[char]0x5206+[char]0x53D1+[char]0x811A+[char]0x672C+'...')"
+powershell -Command "Write-Host ([char]0x5B+ '2/4' + [char]0x5D + ' ' + [char]0x6B63+[char]0x5728+[char]0x590D+[char]0x5236+[char]0x5206+[char]0x53D1+[char]0x811A+[char]0x672C+'...')"
 copy /y scripts\install.bat bin\ >nul
 copy /y scripts\uninstall.bat bin\ >nul
 
 REM 5. Copy Documentation
-powershell -Command "Write-Host ([char]0x5B+ '3/3' + [char]0x5D + ' ' + [char]0x6B63+[char]0x5728+[char]0x590D+[char]0x5236+[char]0x6587+[char]0x6863+'...')"
+powershell -Command "Write-Host ([char]0x5B+ '3/4' + [char]0x5D + ' ' + [char]0x6B63+[char]0x5728+[char]0x590D+[char]0x5236+[char]0x6587+[char]0x6863+'...')"
 if exist "README.txt" copy /y "README.txt" bin\ >nul
 if exist "README.md" copy /y "README.md" bin\ >nul
 if exist "LICENSE" copy /y "LICENSE" bin\ >nul
 
 REM 6. 复制更新日志
-powershell -Command "Write-Host ([char]0x5B+ '4/4' + [char]0x5D + ' 正在复制更新日志...')"
+powershell -Command "Write-Host ([char]0x5B+ '4/4' + [char]0x5D + ' ' + [char]0x6B63+[char]0x5728+[char]0x590D+[char]0x5236+[char]0x66F4+[char]0x65B0+[char]0x65E5+[char]0x5FD7+'...')"
 if exist "updateLog.txt" copy /y "updateLog.txt" bin\ >nul
 
 REM 7. 构建成功

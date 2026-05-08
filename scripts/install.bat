@@ -26,8 +26,8 @@ goto :end
 
 :failed
 powershell -Command "Write-Host ([char]0x5B+[char]0x5931+[char]0x8D25+[char]0x5D+' '+[char]0x521D+[char]0x59CB+[char]0x5316+[char]0x5931+[char]0x8D25+[char]0x3002) -ForegroundColor Red"
+
+:end
 echo.
 powershell -Command "Write-Host ([char]0x8BF7+[char]0x6309+[char]0x56DE+[char]0x8F66+[char]0x952E+[char]0x9000+[char]0x51FA+[char]0x2e+[char]0x2e+[char]0x2e)"
 pause > nul
-
-:end

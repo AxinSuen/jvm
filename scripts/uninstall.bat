@@ -59,17 +59,13 @@ if %EXIT_CODE% neq 0 goto :failed
 
 powershell -Command "%MSG_SUCCESS%"
 powershell -Command "%MSG_MANUAL%"
-echo.
-powershell -Command "Write-Host ([char]0x8BF7+[char]0x6309+[char]0x56DE+[char]0x8F66+[char]0x952E+[char]0x9000+[char]0x51FA+[char]0x2e+[char]0x2e+[char]0x2e)"
-pause > nul
 goto :end
 
 :failed
 powershell -Command "%MSG_FAIL%"
-echo.
-powershell -Command "Write-Host ([char]0x8BF7+[char]0x6309+[char]0x56DE+[char]0x8F66+[char]0x952E+[char]0x9000+[char]0x51FA+[char]0x2e+[char]0x2e+[char]0x2e)"
-pause > nul
+goto :end
 
 :end
 echo.
-pause
+powershell -Command "Write-Host ([char]0x8BF7+[char]0x6309+[char]0x56DE+[char]0x8F66+[char]0x952E+[char]0x9000+[char]0x51FA+[char]0x2e+[char]0x2e+[char]0x2e)"
+pause > nul
