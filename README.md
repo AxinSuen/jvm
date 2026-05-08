@@ -7,7 +7,7 @@
 ## 🌟 核心特性
 - **极简命令**：支持 `ls a` (列出云端)、`i` (安装)、`-v` (版本) 等快捷指令。
 - **智能提权**：自动识别高权限操作并触发 UAC 弹窗，告别手动“右键管理员运行”。
-- **自定义出口**：支持自定义 JDK 软链接位置（默认 `C:\Program Files\Java\jdk`），完美兼容各类 IDE。
+- **自定义出口**：支持自定义 JDK 全局链接位置（默认 `C:\Program Files\Java\jdk`），完美兼容各类 IDE。
 - **国内加速**：内置 GitHub 加速镜像，几秒钟完成 JDK 下载。
 - **完全绿色**：不写注册表，环境变量自动托管，删除目录即卸载。
 
@@ -22,7 +22,7 @@
 
 ## 🛠️ 快速开始
 1. 进入 `bin` 目录，以管理员身份运行 `install.bat`。
-2. 设置你的 **Symlink 路径**（直接回车使用默认路径）。
+2. 设置你的 **JAVA_HOME 出口路径**（直接回车使用默认路径）。
 3. 重启终端，即可开始魔法操作：
    - `jvm ls a` (查看有哪些 JDK)
    - `jvm i 17` (下载安装 JDK 17)
@@ -37,7 +37,8 @@
 | `list [a]` | `ls [a]` | 列出本地或 [a]vailable 远程版本 |
 | `install <v>` | `i <v>` | 安装指定版本 |
 | `use <v>` | - | 切换至指定版本 (支持智能提权) |
-| `symlink <p>` | - | 迁移软链接出口路径 (如 `jvm symlink D:\Java`) |
+| `javahome <p>` | - | 迁移 JAVA_HOME 联接路径 (如 `jvm javahome D:\Java`) |
+| `source [url]` | - | 切换/查看 JDK 下载源 (支持 adoptium/zulu/自定义) |
 | `mirror [on\|off]` | - | 开启/关闭下载加速 |
 | `current` | - | 查看当前生效版本 |
 | `version` | `-v` | 查看工具版本 |

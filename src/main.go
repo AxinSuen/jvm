@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,13 +13,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"archive/zip"
 	"syscall"
 	"unsafe"
 )
 
 const (
-	AppVersion  = "0.2.6"
+	AppVersion  = "0.3.0"
 	AdoptiumAPI = "https://api.adoptium.net/v3/assets/feature_releases"
 
 	ColorReset = "\033[0m"
@@ -41,7 +41,8 @@ func enableConsoleColors() {
 
 type Settings struct {
 	Root      string `json:"root"`
-	Symlink   string `json:"symlink"`
+	SourceURL string `json:"sourceURL"`
+	JavaHome  string `json:"javaHome"`
 	Proxy     string `json:"proxy"`
 	UseMirror bool   `json:"useMirror"`
 	MirrorURL string `json:"mirrorURL"`
@@ -59,7 +60,7 @@ func runAsAdmin() {
 	args := strings.Join(os.Args[1:], " ")
 	cmd := fmt.Sprintf("Start-Process -FilePath '%s' -ArgumentList '%s' -Verb RunAs -Wait", exe, args)
 	exec.Command("powershell", "-Command", cmd).Run()
-	
+
 	loadSettings()
 	if len(os.Args) > 1 && (os.Args[1] == "use" || os.Args[1] == "uninstall") {
 		listInstalled()
@@ -80,6 +81,170 @@ type Release struct {
 	} `json:"binaries"`
 }
 
+type RemoteRelease struct {
+	Version string `json:"version"`
+	URL     string `json:"url"`
+	Size    int64  `json:"size"`
+}
+
+type JDKProvider interface {
+	FetchAvailable(major int) ([]RemoteRelease, error)
+}
+
+// ---------------------------------------------------------
+// Adoptium Provider
+// ---------------------------------------------------------
+type AdoptiumProvider struct {
+	APIUrl string
+}
+
+func (p *AdoptiumProvider) FetchAvailable(major int) ([]RemoteRelease, error) {
+	url := fmt.Sprintf("%s/%d/ga?architecture=%s&image_type=jdk&os=windows", p.APIUrl, major, getArch())
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API 返回状态: %s", resp.Status)
+	}
+
+	var releases []Release
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return nil, err
+	}
+
+	var results []RemoteRelease
+	for _, r := range releases {
+		if len(r.Binaries) > 0 {
+			results = append(results, RemoteRelease{
+				Version: r.VersionData.Semver,
+				URL:     r.Binaries[0].Package.Link,
+				Size:    r.Binaries[0].Package.Size,
+			})
+		}
+	}
+	return results, nil
+}
+
+// ---------------------------------------------------------
+// Zulu Provider
+// ---------------------------------------------------------
+type ZuluPackage struct {
+	JavaVersion []int  `json:"java_version"`
+	Name        string `json:"name"`
+	DownloadURL string `json:"download_url"`
+}
+
+type ZuluProvider struct {
+	APIUrl string
+}
+
+func (p *ZuluProvider) FetchAvailable(major int) ([]RemoteRelease, error) {
+	// Azul API: hw_bitness=64 for x64, arch=x86 (means intel architecture)
+	arch := "x86"
+	if getArch() != "x64" {
+		arch = getArch() // Best effort
+	}
+	url := fmt.Sprintf("%s?os=windows&arch=%s&hw_bitness=64&ext=zip&java_version=%d&release_status=ga&java_package_type=jdk", p.APIUrl, arch, major)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API 返回状态: %s", resp.Status)
+	}
+
+	var packages []ZuluPackage
+	if err := json.NewDecoder(resp.Body).Decode(&packages); err != nil {
+		return nil, err
+	}
+
+	var results []RemoteRelease
+	for _, pkg := range packages {
+		// Filter out JRE or FX packages if they sneaked in
+		if strings.Contains(pkg.Name, "-jre") || strings.Contains(pkg.Name, "-fx-") {
+			continue
+		}
+
+		// Reconstruct version string like "17.0.2"
+		verStr := ""
+		if len(pkg.JavaVersion) > 0 {
+			var strParts []string
+			for _, v := range pkg.JavaVersion {
+				strParts = append(strParts, strconv.Itoa(v))
+			}
+			verStr = strings.Join(strParts, ".")
+		} else {
+			continue
+		}
+
+		results = append(results, RemoteRelease{
+			Version: verStr,
+			URL:     pkg.DownloadURL,
+			Size:    0, // Zulu API doesn't provide size in the list
+		})
+	}
+	return results, nil
+}
+
+// ---------------------------------------------------------
+// Custom Provider
+// ---------------------------------------------------------
+type CustomProvider struct {
+	APIUrl string
+}
+
+func (p *CustomProvider) FetchAvailable(major int) ([]RemoteRelease, error) {
+	resp, err := http.Get(p.APIUrl)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API 返回状态: %s", resp.Status)
+	}
+
+	var results []RemoteRelease
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+		return nil, err
+	}
+
+	// Optional filtering by major version could be done here if the custom API returns all versions.
+	// We'll trust the custom API to either return the right versions or we'll just filter it locally.
+	var filtered []RemoteRelease
+	prefix := fmt.Sprintf("%d.", major)
+	prefix8 := fmt.Sprintf("1.%d.", major)
+	for _, r := range results {
+		if strings.HasPrefix(r.Version, prefix) || strings.HasPrefix(r.Version, prefix8) || strconv.Itoa(major) == "8" && strings.HasPrefix(r.Version, "8") {
+			filtered = append(filtered, r)
+		}
+	}
+
+	if len(filtered) > 0 {
+		return filtered, nil
+	}
+	return results, nil // Fallback to returning all if filtering yields nothing
+}
+
+// ---------------------------------------------------------
+// Provider Router
+// ---------------------------------------------------------
+func getProvider() JDKProvider {
+	url := settings.SourceURL
+	if strings.Contains(url, "api.adoptium.net") {
+		return &AdoptiumProvider{APIUrl: "https://api.adoptium.net/v3/assets/feature_releases"}
+	} else if strings.Contains(url, "api.azul.com") {
+		return &ZuluProvider{APIUrl: "https://api.azul.com/metadata/v1/zulu/packages"}
+	} else {
+		return &CustomProvider{APIUrl: url}
+	}
+}
+
 func main() {
 	enableConsoleColors()
 	loadSettings()
@@ -90,11 +255,11 @@ func main() {
 	}
 
 	command := os.Args[1]
-	
+
 	// 如果是作为独立提权窗口运行的，防止报错或执行完毕后一闪而过导致闪退，全局添加拦截。
 	// (普通的非管理员窗口通过 os.Exit() 退出，不会触发此 defer)
 	defer func() {
-		if isAdmin() && (command == "use" || command == "uninstall" || command == "setup" || command == "symlink") {
+		if isAdmin() && (command == "use" || command == "uninstall" || command == "setup" || command == "javahome") {
 			fmt.Println("\n请按回车键关闭此窗口...")
 			var input string
 			fmt.Scanln(&input)
@@ -115,19 +280,50 @@ func main() {
 		}
 		installVersion(os.Args[2])
 	case "uninstall":
-		if !isAdmin() { runAsAdmin() }
+		if !isAdmin() {
+			runAsAdmin()
+		}
 		if len(os.Args) < 3 {
 			fmt.Println("错误: 请指定要卸载的版本。")
 			return
 		}
 		uninstallVersion(resolveVersion(os.Args[2]))
 	case "use":
-		if !isAdmin() { runAsAdmin() }
+		if !isAdmin() {
+			runAsAdmin()
+		}
 		if len(os.Args) < 3 {
 			fmt.Println("错误: 请指定要切换的版本。")
 			return
 		}
 		useVersion(resolveVersion(os.Args[2]))
+	case "source":
+		if len(os.Args) > 2 {
+			val := os.Args[2]
+			if val == "adoptium" {
+				settings.SourceURL = AdoptiumAPI
+				fmt.Println("已将下载源切换为: Adoptium (Temurin)")
+			} else if val == "zulu" {
+				settings.SourceURL = "https://api.azul.com/metadata/v1/zulu/packages"
+				fmt.Println("已将下载源切换为: Azul Zulu")
+			} else if strings.HasPrefix(val, "http") {
+				settings.SourceURL = val
+				fmt.Printf("已将下载源切换为自定义地址: %s\n", val)
+			} else {
+				fmt.Println("未知的源格式。请使用 'adoptium', 'zulu' 或提供以 http 开头的完整 URL。")
+				return
+			}
+			saveSettings()
+		} else {
+			sourceName := "自定义源 (Custom)"
+			if strings.Contains(settings.SourceURL, "api.adoptium.net") {
+				sourceName = "Adoptium (Temurin)"
+			} else if strings.Contains(settings.SourceURL, "api.azul.com") {
+				sourceName = "Azul Zulu"
+			}
+			fmt.Printf("当前下载源: %s\n", sourceName)
+			fmt.Printf("源接口地址: %s\n", settings.SourceURL)
+		}
 	case "root":
 		if len(os.Args) > 2 {
 			path := os.Args[2]
@@ -169,30 +365,34 @@ func main() {
 			fmt.Printf("当前版本: %s\n", ver)
 		}
 	case "setup":
-		if !isAdmin() { runAsAdmin() }
-		customSymlink := ""
-		if len(os.Args) > 2 {
-			customSymlink = os.Args[2]
+		if !isAdmin() {
+			runAsAdmin()
 		}
-		setupEnvironment(customSymlink)
-	case "symlink":
-		if !isAdmin() { runAsAdmin() }
+		customJavaHome := ""
+		if len(os.Args) > 2 {
+			customJavaHome = os.Args[2]
+		}
+		setupEnvironment(customJavaHome)
+	case "javahome":
+		if !isAdmin() {
+			runAsAdmin()
+		}
 		if len(os.Args) < 3 {
-			fmt.Printf("当前软链接路径: %s\n", settings.Symlink)
-			fmt.Println("如需修改，请使用: jvm symlink <新路径>")
+			fmt.Printf("当前 JAVA_HOME 路径: %s\n", settings.JavaHome)
+			fmt.Println("如需修改，请使用: jvm javahome <新路径>")
 			return
 		}
 		newPath := os.Args[2]
 		fmt.Printf("正在将软链接路径更新为: %s\n", newPath)
-		
+
 		oldVersion := getCurrentVersion()
-		
+
 		// 1. Remove old symlink
-		exec.Command("cmd", "/c", "rmdir", "/q", settings.Symlink).Run()
-		
+		exec.Command("cmd", "/c", "rmdir", "/q", settings.JavaHome).Run()
+
 		// 2. Update setting and Environment
 		setupEnvironment(newPath)
-		
+
 		// 3. Re-apply current version if any
 		if oldVersion != "" {
 			useVersion(oldVersion)
@@ -215,6 +415,7 @@ func printUsage() {
 	fmt.Println("  jvm install [i] <ver>   安装指定版本 (如 17.0.1+12)")
 	fmt.Println("  jvm use <version>       切换到指定版本")
 	fmt.Println("  jvm mirror [on|off]     开启/关闭国内镜像加速")
+	fmt.Println("  jvm source [url|name]   设置或查看 JDK 下载源 (adoptium/zulu/自定义URL)")
 	fmt.Println("  jvm uninstall <version> 卸载指定版本")
 	fmt.Println("  jvm root [path]         设置或查看 JDK 存储根目录")
 	fmt.Println("  jvm current             显示当前生效的版本")
@@ -234,8 +435,11 @@ func loadSettings() {
 	if settings.MirrorURL == "" {
 		settings.MirrorURL = "https://ghfast.top/"
 	}
-	if settings.Symlink == "" {
-		settings.Symlink = `C:\Program Files\Java\jdk`
+	if settings.JavaHome == "" {
+		settings.JavaHome = `C:\Program Files\Java\jdk`
+	}
+	if settings.SourceURL == "" {
+		settings.SourceURL = AdoptiumAPI
 	}
 }
 
@@ -254,12 +458,12 @@ func getEffectiveRoot() string {
 	return filepath.Dir(exePath)
 }
 
-func setupEnvironment(customSymlink string) {
+func setupEnvironment(customJavaHome string) {
 	fmt.Println("正在初始化 Java 版本管理环境...")
-	
-	if customSymlink != "" {
-		absSym, _ := filepath.Abs(customSymlink)
-		settings.Symlink = absSym
+
+	if customJavaHome != "" {
+		absSym, _ := filepath.Abs(customJavaHome)
+		settings.JavaHome = absSym
 	}
 
 	exePath, _ := os.Executable()
@@ -268,15 +472,15 @@ func setupEnvironment(customSymlink string) {
 	os.MkdirAll(filepath.Join(root, "versions"), 0755)
 
 	// Ensure the parent directory of the symlink exists
-	os.MkdirAll(filepath.Dir(settings.Symlink), 0755)
-	
-	fmt.Printf("%s正在将 JAVA_HOME 设置为 %s%s\n", ColorGreen, settings.Symlink, ColorReset)
-	if output, err := runPowerShell(fmt.Sprintf("[Environment]::SetEnvironmentVariable('JAVA_HOME', '%s', 'Machine')", settings.Symlink)); err != nil {
+	os.MkdirAll(filepath.Dir(settings.JavaHome), 0755)
+
+	fmt.Printf("%s正在将 JAVA_HOME 设置为 %s%s\n", ColorGreen, settings.JavaHome, ColorReset)
+	if output, err := runPowerShell(fmt.Sprintf("[Environment]::SetEnvironmentVariable('JAVA_HOME', '%s', 'Machine')", settings.JavaHome)); err != nil {
 		fmt.Printf("\n%s[错误] 无法设置 JAVA_HOME: %v%s\n", ColorRed, err, ColorReset)
 		fmt.Println(output)
 		os.Exit(1)
 	}
-	
+
 	fmt.Printf("%s正在将 %%JAVA_HOME%%\\bin 和工具目录添加到系统 PATH 顶部...%s\n", ColorGreen, ColorReset)
 	script := fmt.Sprintf(`
 		$exeDir = '%s'
@@ -289,8 +493,8 @@ func setupEnvironment(customSymlink string) {
 		# Prepend our paths
 		$newPath = $javaBin + ';' + $exeDir + ';' + ($pathArray -join ';')
 		[Environment]::SetEnvironmentVariable('Path', $newPath, 'Machine')
-	`, exeDir, settings.Symlink)
-	
+	`, exeDir, settings.JavaHome)
+
 	if output, err := runPowerShell(script); err != nil {
 		fmt.Printf("\n%s[错误] 无法更新 PATH: %v%s\n", ColorRed, err, ColorReset)
 		fmt.Println(output)
@@ -308,10 +512,11 @@ func runPowerShell(command string) (string, error) {
 }
 
 func listAvailable() {
-	fmt.Println("正在从 Adoptium (Temurin) 获取可用版本...")
+	fmt.Println("正在从当前源获取可用版本...")
 	majors := []int{8, 11, 17, 21}
+	provider := getProvider()
 	for _, v := range majors {
-		releases, err := fetchReleases(v)
+		releases, err := provider.FetchAvailable(v)
 		if err != nil {
 			fmt.Printf("获取 JDK %d 出错: %v\n", v, err)
 			continue
@@ -320,7 +525,7 @@ func listAvailable() {
 		if len(releases) > 0 {
 			versions := make(map[string]bool)
 			for _, r := range releases {
-				versions[r.VersionData.Semver] = true
+				versions[r.Version] = true
 			}
 			var sorted []string
 			for k := range versions {
@@ -335,40 +540,26 @@ func listAvailable() {
 	}
 }
 
-func fetchReleases(major int) ([]Release, error) {
-	url := fmt.Sprintf("%s/%d/ga?architecture=%s&image_type=jdk&os=windows", AdoptiumAPI, major, getArch())
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API 返回状态: %s", resp.Status)
-	}
-
-	var releases []Release
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
-		return nil, err
-	}
-	return releases, nil
-}
-
 func installVersion(version string) {
 	fmt.Printf("正在查找版本 %s...\n", version)
-	
+
 	parts := strings.Split(version, ".")
 	if len(parts) == 0 {
 		fmt.Println("无效的版本格式。")
 		return
 	}
 	majorStr := parts[0]
-	if majorStr == "jdk8u" { majorStr = "8" } 
+	if majorStr == "jdk8u" || majorStr == "1" {
+		majorStr = "8"
+	}
 	var major int
 	fmt.Sscanf(majorStr, "%d", &major)
-	if major == 0 { major = 8 } 
+	if major == 0 {
+		major = 8
+	}
 
-	releases, err := fetchReleases(major)
+	provider := getProvider()
+	releases, err := provider.FetchAvailable(major)
 	if err != nil {
 		fmt.Printf("错误: %v\n", err)
 		return
@@ -377,12 +568,10 @@ func installVersion(version string) {
 	var targetLink string
 	var targetSize int64
 	for _, r := range releases {
-		if r.VersionData.Semver == version {
-			if len(r.Binaries) > 0 {
-				targetLink = r.Binaries[0].Package.Link
-				targetSize = r.Binaries[0].Package.Size
-				break
-			}
+		if r.Version == version {
+			targetLink = r.URL
+			targetSize = r.Size
+			break
 		}
 	}
 
@@ -391,9 +580,16 @@ func installVersion(version string) {
 		return
 	}
 
-	if settings.UseMirror {
+	if settings.UseMirror && strings.Contains(settings.SourceURL, "api.adoptium.net") {
 		fmt.Printf("正在使用镜像加速: %s\n", settings.MirrorURL)
 		targetLink = settings.MirrorURL + targetLink
+	}
+
+	if targetSize == 0 {
+		resp, err := http.Head(targetLink)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			targetSize = resp.ContentLength
+		}
 	}
 
 	versionsDir := filepath.Join(getEffectiveRoot(), "versions")
@@ -405,10 +601,10 @@ func installVersion(version string) {
 	}
 
 	os.MkdirAll(versionsDir, 0755)
-	
+
 	tmpFile := filepath.Join(os.TempDir(), "jvm-jdk.zip")
 	fmt.Printf("正在下载 %s (%.2f MB)...\n", version, float64(targetSize)/1024/1024)
-	
+
 	if err := downloadFile(tmpFile, targetLink, targetSize); err != nil {
 		fmt.Printf("\n下载出错: %v\n", err)
 		return
@@ -422,6 +618,7 @@ func installVersion(version string) {
 
 	os.Remove(tmpFile)
 	fmt.Printf("\n成功安装 JDK %s 至 %s\n", version, installDir)
+
 }
 
 func uninstallVersion(version string) {
@@ -455,7 +652,7 @@ func (pw *ProgressWriter) printProgress() {
 	percent := float64(pw.Downloaded) / float64(pw.Total) * 100
 	width := 30
 	completed := int(percent / 100 * float64(width))
-	
+
 	bar := make([]byte, width)
 	for i := 0; i < width; i++ {
 		if i < completed {
@@ -466,7 +663,7 @@ func (pw *ProgressWriter) printProgress() {
 			bar[i] = ' '
 		}
 	}
-	
+
 	fmt.Printf("\r[%s] %.1f%% (%d/%d MB)", string(bar), percent, pw.Downloaded/1024/1024, pw.Total/1024/1024)
 }
 
@@ -543,23 +740,28 @@ func extractZip(src string, dest string) error {
 func useVersion(version string) {
 	root := getEffectiveRoot()
 	versionDir := filepath.Join(root, "versions", version)
-	
+
 	if _, err := os.Stat(versionDir); os.IsNotExist(err) {
 		fmt.Printf("版本 %s 未安装。请先执行 'jvm install %s'。\n", version, version)
 		return
 	}
 
-	linkPath := settings.Symlink
-	
+	linkPath := settings.JavaHome
+
+	// 确保父目录存在，防止首次使用时因为目录缺失导致链接失败
+	os.MkdirAll(filepath.Dir(linkPath), 0755)
+
 	// Create symlink
 	fmt.Printf("正在创建软链接: %s -> %s\n", linkPath, versionDir)
-	
+
 	// 使用原生的 cmd 命令执行，彻底避免 PowerShell 对路径解析或空格转义导致的不稳定问题
 	exec.Command("cmd", "/c", "rmdir", "/q", linkPath).Run()
-	cmd := exec.Command("cmd", "/c", "mklink", "/D", linkPath, versionDir)
+	// 在 Windows 家庭版中，/D (软链接) 会因为严格的安全策略 (无 SeCreateSymbolicLinkPrivilege 权限) 频繁失败。
+	// 改用 /J (目录联接 Directory Junction) 是最完美的解决方案，它不需要任何特权即可创建，且功能完全等同。
+	cmd := exec.Command("cmd", "/c", "mklink", "/J", linkPath, versionDir)
 	outputBytes, err := cmd.CombinedOutput()
 	output := string(outputBytes)
-	
+
 	if err != nil {
 		fmt.Printf("%s创建软链接出错: %v%s\n", ColorRed, err, ColorReset)
 		fmt.Println(output)
@@ -590,7 +792,7 @@ func resolveVersion(input string) string {
 	if len(versions) == 0 {
 		return input
 	}
-	
+
 	if idx, err := strconv.Atoi(input); err == nil {
 		if idx >= 1 && idx <= len(versions) {
 			return versions[idx-1]
@@ -601,7 +803,7 @@ func resolveVersion(input string) string {
 
 func listInstalled() {
 	versions := getInstalledVersions()
-	
+
 	if len(versions) == 0 {
 		fmt.Println("尚未安装任何 JDK 版本。使用 'jvm install' 开始安装。")
 		return
@@ -626,16 +828,16 @@ func getArch() string {
 }
 
 func getCurrentVersion() string {
-	// 优先尝试读取软链接指向的真实物理路径，作为唯一的“事实真相”
-	if settings.Symlink != "" {
-		if realPath, err := filepath.EvalSymlinks(settings.Symlink); err == nil {
+	// 优先尝试读取软链接/目录联接指向的真实物理路径，作为唯一的“事实真相”
+	if settings.JavaHome != "" {
+		if realPath, err := os.Readlink(settings.JavaHome); err == nil {
 			baseName := filepath.Base(realPath)
 			if baseName != "" && baseName != "." && baseName != string(filepath.Separator) {
 				return baseName
 			}
 		}
 	}
-	
+
 	// 如果软链接不存在或无法读取，说明当前没有生效的 JDK
 	return ""
 }

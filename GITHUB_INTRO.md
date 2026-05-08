@@ -6,14 +6,14 @@
 
 ## 💎 为什么选择 jvm？
 
-### 🚀 极速体验
-通过内置的国内镜像加速，下载一个 JDK 只需要喝一口水的时间。支持 `jvm ls a` 快速浏览 Adoptium 官方发布的各个 GA 版本。
+### 🚀 极速体验与多源支持 (NEW!)
+通过内置的国内镜像加速，下载一个 JDK 只需要喝一口水的时间。支持 `jvm source zulu/adoptium` 无缝切换不同的发行商 API，甚至支持接入私有自定义下载源。
 
 ### 🛡️ 智能权限管理 (NEW!)
 再也不用满地找“以管理员身份运行”了！`jvm` 能够智能识别 `use` 或 `setup` 等敏感操作，并在需要时自动请求 UAC 授权。
 
-### 🔗 灵活的 Symlink 映射
-你可以将 JDK 映射到任何你喜欢的地方（如 `C:\Program Files\Java\jdk`）。更换映射路径只需一个 `jvm symlink` 命令，环境变量会自动同步，IDE 无需重新配置。
+### 🔗 灵活的 JAVA_HOME 映射
+你可以将 JDK 映射到任何你喜欢的地方（如 `C:\Program Files\Java\jdk`）。更换映射路径只需一个 `jvm javahome` 命令，底层使用对家庭版极其友好的目录联接（Directory Junction）技术，环境变量会自动同步，IDE 无需重新配置。
 
 ### 🍃 纯粹的绿色软件
 所有 JDK 和配置都锁在工具目录下。如果你想换台电脑，直接把 `bin` 目录拷走就能用。
@@ -26,6 +26,7 @@
 jvm ls a         # 看看云端有哪些 JDK
 jvm i 17         # 安装 JDK 17
 jvm use 17       # 切换到 JDK 17 (自动请求管理员权限)
+jvm source zulu  # 一键切换为 Azul Zulu 下载源
 jvm current      # 确认当前版本
 jvm ls           # 看看本地装了哪些
 jvm -v           # 看看工具版本
