@@ -59,15 +59,13 @@ if %EXIT_CODE% neq 0 goto :failed
 
 powershell -Command "%MSG_SUCCESS%"
 powershell -Command "%MSG_MANUAL%"
-echo.
-echo Press any key to exit...
-pause > nul
 goto :end
 
 :failed
 powershell -Command "Write-Host '[Failed] Cleanup failed' -ForegroundColor Red"
+goto :end
+
+:end
 echo.
 echo Press any key to exit...
 pause > nul
-
-:end

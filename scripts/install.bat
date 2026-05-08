@@ -26,8 +26,8 @@ goto :end
 
 :failed
 powershell -Command "Write-Host '[Failed] Initialization failed.' -ForegroundColor Red"
+
+:end
 echo.
 echo Press any key to exit...
 pause > nul
-
-:end

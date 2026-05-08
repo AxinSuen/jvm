@@ -252,7 +252,7 @@ func main() {
 	command := os.Args[1]
 
 	defer func() {
-		if isAdmin() && (command == "use" || command == "uninstall" || command == "setup" || command == "javahome") {
+		if isAdmin() && (command == "use" || command == "uninstall" || command == "javahome") {
 			fmt.Println("\n(Action Required) Press Enter to close this window...")
 			var input string
 			fmt.Scanln(&input)
